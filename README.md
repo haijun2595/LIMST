@@ -34,10 +34,15 @@ R packages can be installed in the R environment using the "install.packege()" o
 
 	install.packege("packege_name")
 
-	if(!"BiocManager"%in%installed.packages()) 
-	install.packages("BiocManager",update = F,ask = F)
- 	if(!"packege_name"%in%installed.packages()) 
-	BiocManager::install("packege_name")
+	if(!"BiocManager"%in%installed.packages()){ 
+	install.packages("BiocManager")}
+ 	if(!"packege_name"%in%installed.packages()){ 
+	BiocManager::install("packege_name")}
+
+	if (!"devtools" %in% installed.packages()) {
+  	install.packages("devtools")}
+   	devtools::install_github("packege_name")
+
 
 
 ## Codes
