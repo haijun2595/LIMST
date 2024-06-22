@@ -26,7 +26,7 @@ The following are the version numbers of the software or algorithms used in this
 	R 4.0.5, 4.1.0 and 4.3.1(only for SENIC analysis)
 
 ## Installation guide
-Python libraries can be installed in a shell environment using the "pip install" command.
+Python libraries can be installed in a shell environment using the "pip install" command. 
 
 	pip install "library_name"
 
