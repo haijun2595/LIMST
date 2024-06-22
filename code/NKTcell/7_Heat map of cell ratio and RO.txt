@@ -1,0 +1,124 @@
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(wesanderson)
+library(viridis)
+library(ggsci)
+library(tidytext)
+library(ggpubr)
+library(cowplot)
+library(facetscales)
+library(latex2exp)
+library(ggstatsplot)
+library(scales)
+set.seed(123)
+DNT<- readRDS("path/DNT_cells_selected_samplegroup_clusters.rds")
+table(DNT@meta.data$sample_type)
+Idents(DNT)<-"leiden_renamed"
+Idents(DNT) <-"sample_type"
+mycolors <- c("#99cc99", "#99ccff", "#cc6699", "#ffcc99", "#ccb3cc")
+names(mycolors) <- c("NT", "Pre", "PT", "Met", "MLN")
+md <- as_tibble(DNT@meta.data)
+# Make sure the column name and type are correct
+md <- md %>%
+  mutate(leiden_renamed = as.character(leiden_renamed),
+         sample_type = as.character(sample_type))
+
+fracMD <- md %>%
+  group_by(leiden_renamed, sample_type) %>%
+  summarize(n = n(), .groups = 'drop') %>%  
+  ungroup() %>%
+  group_by(leiden_renamed) %>%
+  mutate(frac = n / sum(n))
+
+fracMD$sample_type <- factor(fracMD$sample_type,
+                            levels = names(mycolors))
+g <- fracMD %>%
+  ggplot() +
+  geom_bar(aes(x = leiden_renamed, y = frac,
+               fill = sample_type),
+           color = NA,
+           position="stack", stat="identity") +
+  scale_fill_manual(values = mycolors) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 1, hjust=1),
+        strip.text.y = element_text(angle = 0),
+        strip.background = element_rect(colour=NA, fill=NA))
+ggsave(file.path(figurePath, paste0("figure2jup.pdf")), g)
+ggsave(filename = "fir1.pdf")
+
+
+# Let's assume that the 'md' data frame has been created
+N <- dim(md)[1]
+
+# Make sure the column is a character type
+md <- md %>%
+  mutate(leiden_renamed = as.character(leiden_renamed),
+         sample_type = as.character(sample_type))
+
+# Count the number of each group
+cmd <- md %>%
+  group_by(leiden_renamed) %>%
+  summarize(n = n(), .groups = 'drop')
+
+ctmd <- md %>%
+  group_by(leiden_renamed, sample_type) %>%
+  summarize(n = n(), .groups = 'drop')
+
+tmd <- md %>%
+  group_by(sample_type) %>%
+  summarize(n = n(), .groups = 'drop')
+
+# Determine the order of leiden_renamed
+leiden_order <- c("c0_DNT_CD69", "c1_DNT_GZMK", "c2_DNT_IL7R", "c3_DNT_APOE", "c4_DNT_FOXP3",
+                  "c5_DNT_SELL", "c6_DNT_EEF1A1", "c7_DNT_GNLY")
+
+# Initialize the matrix and make sure it is in order
+matRoe <- matrix(0, nrow = length(unique(md$sample_type)), ncol = length(leiden_order))
+rownames(matRoe) <- unique(md$sample_type)
+colnames(matRoe) <- leiden_order
+
+matCell <- matrix(0, nrow = length(unique(md$sample_type)), ncol = length(leiden_order))
+rownames(matCell) <- unique(md$sample_type)
+colnames(matCell) <- leiden_order
+
+# Populate the matrix
+for(ci in leiden_order){
+  k <- cmd$n[cmd$leiden_renamed == ci]
+  for(ti in unique(md$sample_type)) {
+    if(any(ctmd$leiden_renamed == ci & ctmd$sample_type == ti)) {
+      n <- ctmd$n[ctmd$leiden_renamed == ci & ctmd$sample_type == ti]
+    } else {
+      n <- 0
+    }
+    M <- tmd$n[tmd$sample_type == ti]
+    matRoe[ti, ci] <- (n/M) / (k/N)
+    matCell[ti, ci] <- n
+  }
+}
+
+matRoe[matRoe > 3] <- 3
+
+my.breaks <- seq(0, 1.99, by=0.01)
+my.colors <- c(
+  colorRampPalette(colors = c("#6DCCFD", "white"))(length(my.breaks)/2),
+  colorRampPalette(colors = c("white", "#FD9AA0"))(length(my.breaks)/2)
+)
+my.breaks.extra <- seq(2, 3, by = (3 - 2)/99)
+my.colors.extra <- colorRampPalette(colors = c("#FD9AA0", "#550000"))(length(my.breaks.extra))
+my.breaks <- c(my.breaks, my.breaks.extra)
+my.colors <- c(my.colors, my.colors.extra)
+
+widthi = ncol(matRoe)/6 + 4.3
+heighti = nrow(matRoe)/10 + 3
+
+# Generate and save a heatmap
+pdf(file.path(getwd(), "DNT.pdf"), width = widthi, height = heighti)
+pheatmap(matRoe,
+               color = my.colors,
+               breaks = my.breaks,
+               cluster_rows = F,
+               cluster_cols = F)
+dev.off()

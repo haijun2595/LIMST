@@ -1,0 +1,164 @@
+# Load necessary libraries
+library(SeuratData)
+library(dplyr)
+# Read in the data
+setwd("path")
+load("path/DNT_all.Rdata")
+# Set 'CancerType' as the identity of the Seurat object
+Idents(DNT_all) <- "CancerType"
+
+# Subset the Seurat object to remove samples with 'AML' CancerType
+DNT_all <- subset(DNT_all, subset = CancerType != "AML")
+table(DNT_all@meta.data$CancerType)  # Check the distribution of CancerType after subsetting
+table(DNT_all$TissueType)  # Check the distribution of TissueType
+
+# Data normalization
+DNT_all <- NormalizeData(DNT_all, normalization.method = "LogNormalize", scale.factor = 10000)
+DNT_all <- FindVariableFeatures(DNT_all, selection.method = "vst", nfeatures = 2000)
+
+
+##PCA
+# Perform principal component analysis (PCA)
+all.genes <- rownames(DNT_all)
+DNT_all <- ScaleData(DNT_all, features = all.genes)
+DNT_all <- RunPCA(DNT_all, features = VariableFeatures(object = DNT_all))
+
+# Visualize PCA results
+pdf(file = "DNT_all_cell_PCA.pdf")
+DimPlot(object = DNT_all, reduction = "pca")
+dev.off()
+print(DNT_all[["pca"]], dims = 1:5, nfeatures = 5)
+pdf(file = "DNT_all_ElbowPlot.pdf")# Generate Elbow plot
+ElbowPlot(DNT_all)
+dev.off()
+# Find nearest neighbors in the PCA space
+DNT_all <- FindNeighbors(DNT_all, dims = 1:10)
+# Run UMAP
+DNT_all <- RunUMAP(DNT_all, dims = 1:10)
+
+# Evaluate suitable resolutions
+resolution <- c(0.01, 0.02, 0.03, 0.05, 0.08, 0.1, 0.12, 0.15, 0.18, 0.2, 0.25, 0.28, 0.3)
+DNT_all_2 <- FindClusters(DNT_all,
+                      resolution = resolution,
+                      verbose = TRUE )
+# Count the number of cells in each cluster at each resolution
+library(clustree)
+apply(DNT_all_2@meta.data[, grep("RNA_snn", colnames(DNT_all_2@meta.data))], 2, table)
+# Visualize cluster hierarchy using clutree function to examine relationships at different resolutions
+clustree(DNT_all_2@meta.data, prefix = "RNA_snn_res.")  # Manually save the plot
+ggsave(filename = "DNT_all_clustree.pdf", height = 10, width = 8)
+dev.off( )
+# Re-cluster the data at a specific resolution
+DNT_all_2 <- FindClusters(DNT_all, resolution = 0.05)
+dir.create("0.05")
+
+###UMAP
+# Assign cluster identities to Seurat object DNT_all_2
+Idents(DNT_all_2)="seurat_clusters"
+DimPlot(DNT_all_2, reduction = "umap",
+        group.by ="seurat_clusters"
+        ,label = T,raster=FALSE)+
+  scale_color_manual(values = c(
+    colors <- c("#71c3aa", "#E1A3C6", "#FB6346","#FBD51A",
+                "#E7A649","#3781C2","#4C6679","#28507D","#3A6135",
+                "#814ECC","#6466A5", "#A14299","#F58C70")))+
+  theme(panel.border = element_rect(fill=NA,color="black", size=0, linetype="solid"))+
+  labs(title = "Celltype")
+ggsave(filename = "/path/umap.pdf",height =7,width =9)
+dev.off()
+
+##violin plot
+# Generate a violin plot for the expression of the gene FOXP3 across clusters
+p<- VlnPlot(DNT_all_2, features = c("FOXP3"), pt.size = 0.0, ncol = 1, raster = FALSE)
+p
+ggsave(p, file = "FOXP3_violin_cluster_0.05.pdf", height = 3, width = 5)
+
+# Change cluster assignment for visualizing individual cell types
+Idents(DNT_all_2) <- "type"
+FOXP3_counts <- FetchData(DNT_all_2, vars = "FOXP3")# Fetch expression data for the gene FOXP3
+DNT_all_2@meta.data$FOXP3 <- FOXP3_counts$FOXP3
+# Generate violin plot with point overlay for the gene FOXP3 across cell types
+p1 <- VlnPlot(subset(DNT_all_2), features = c("FOXP3"), pt.size = 0.0, ncol = 1, raster = FALSE, adjust = 1.5) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5)) +
+  labs(title = "FOXP3", 
+       x = "clusters", 
+       y = "Expression Level") +
+  theme(axis.line.x = element_line(color = "black", size = 0.5) +
+  theme(axis.line.y = element_line(color = "black", size = 0.5)
+ggsave(p1 , file = "FOXP3_violin_cluster.pdf", height = 4, width = 3)# Save the violin plot
+
+##clusters of cells accumulate in columns of medium tumor and normal proportions
+cell.group <- DNT_all_2# Create a new Seurat object 'cell.group' for further analysis
+Idents(cell.group) <- "TissueType"
+cell.group@meta.data$TissueType <- cell.group@active.ident  # Activate the TissueType group
+cellnum <- table(cell.group$TissueType, cell.group$seurat_clusters)
+cell.prop <- as.data.frame(prop.table(cellnum, 1))  # Calculate the proportion of each cell type
+colnames(cell.prop) <- c("Group", "Celltype", "Proportion")  # Rename the columns in cell.prop
+new_order <- c("Primary tumor tissue", "Healthy donor", "Uninvolved normal tissue", "Metastatic tumor tissue")
+cell.prop$Group <- factor(cell.prop$Group, levels = new_order)
+
+# Define color palette
+colors <- c("#71c3aa", "#E1A3C6", "#FB6346", "#FBD51A", "#E7A649", "#3781C2","#F58C70","#4C6679", "#3A6135", "#814ECC", "#6466A5", "#A14299", "#28507D")
+
+# Create the stacked bar plot
+p <- ggplot(cell.prop, aes(x = Group, y = Proportion, fill = Celltype)) +
+  geom_bar(stat = "identity", position = "stack", color = "white", size = 0.11) +
+  scale_fill_manual(values = colors) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black"),
+    plot.margin = unit(c(1, 1, 1, 1), "lines"),
+    axis.text.x = element_text(size = rel(1), angle = 45, hjust = 1),
+    axis.text.y = element_text(size = rel(1))
+  )
+
+# Save the plot to a PDF file
+ggsave("/path/DNT_cell_type_proportion_barplot_0.05.pdf", p, width = 6, height = 5)
+dev.off()
+
+#####GSVA
+# Load the required R packages
+library(GSVA)
+library(GSEABase)
+library(clusterProfiler)
+library(GSEA)
+library(limma)
+library(pheatmap)
+library(stringr)
+library(ggplot2)
+library(psych)
+library(Matrix)
+library(ggpubr)
+library(SingleR)
+# Assign cluster identities
+Idents(DNT_all_2) <- "seurat_clusters"
+# Calculate average expression levels for each cell type
+Average <- AverageExpression(DNT_all_2, assays = NULL, features = NULL, return.seurat = FALSE,
+                             add.ident = NULL, slot = "data", use.scale = FALSE, use.counts = FALSE, verbose = TRUE)
+data <- as.matrix(Average$RNA)# Extract expression data as a matrix
+# Read in and split the gene sets for GO analysis
+genesets <- read.gmt("path/c5.go.v2023.1.Hs.symbols.gmt")
+genesets = split(genesets$gene, genesets$term)
+# Run GSVA for GO analysis
+GSVAresult <- gsva(data, genesets, min.sz = 10, max.sz = Inf, tau = 1, method = "gsva", kcdf = "Poisson",
+                   mx.diff = TRUE, abs.ranking = FALSE, verbose = TRUE, parallel.sz = 10)
+write.csv(GSVAresult, file = "DNT_go.csv")
+t <- t(scale(t(GSVAresult)))
+write.csv(t, file = "DNT_go_t.csv")
+# Process and plot the results using pheatmap
+t1 <- read.csv("DNT_hall_t_NEW.csv", header = T, row.names = 1)
+rownames(t1) <- gsub("HALLMARK_", " ", rownames(t1))  # Update row names
+colnames(t1) <- gsub("\\.", "+", colnames(t1))  # Replace dots with plus sign in column names
+colnames(t1) <- c("C0", "C1", "C2", "C3", "C4", "C5")
+t1 <- as.matrix(t1)
+# Generate a heatmap using pheatmap
+p <- pheatmap::pheatmap(t1, cluster_rows = T, cluster_cols = T, show_colnames = T,
+                       fontsize = 10, border_color = 'NA',
+                       scale = "row", color = colorRampPalette(c('#845EC2', "white",'#FF8066'))(30),
+                       angle_col = c("45"))
+ggsave("DNT_GSVA.pdf", p, width = 9, height = 8)# Save the heatmap plot

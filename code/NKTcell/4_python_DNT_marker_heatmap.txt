@@ -1,0 +1,158 @@
+
+import scanpy as sc
+import scvi
+import os
+import math
+import itertools
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+# Load data
+adata = sc.read_h5ad('path/DNT_cells_selected_samplegroup_clusters.h5ad')
+dir = 'path/new_clusters/DNT1/out/'
+print(adata.obs['leiden_renamed'].value_counts())
+markers = [
+    'CCL4', 'GZMK', 'GZMA', 'IFNG',  'CCL5', 'NKG7',
+    'GZMH', 'GZMB', 'GNLY', 'FGFBP2', 'PRF1',
+    'CD69',  'JUNB', 'CXCR4', 'DDIT4', 'TSC22D3',
+    'IL7R','ANXA1', 'JUND',  'TNFAIP3', 'ZFP36L2', 
+    'SELL', 'CCR7', 'TCF7', 'LEF1', 'KLF2',
+    'FOXP3', 'TNFRSF18', 'BATF', 'TIGIT', 'CTLA4', 'TNFRSF4',
+    'ZNF90', ‘IL2RA', ’'EEF1A1',  'EEF1G', 'EEF1B2',
+    'ALB', 'APOA2', 'APOA1', 'APOE', 'APOC3', 'APOC2'
+]
+
+new_order = [
+    'c1_DNT_GZMK', 'c7_DNT_GNLY', 'c0_DNT_CD69', 'c2_DNT_IL7R',
+    'c5_DNT_SELL', 'c4_DNT_FOXP3', 'c6_DNT_EEF1A1', 'c3_DNT_APOE'
+]
+adata.obs['leiden_renamed'] = adata.obs['leiden_renamed'].cat.reorder_categories(new_order)
+
+
+# Create a custom color mapping scheme
+colors = ["#4DBBD5B2", "white", "#E64B35B2"]
+cmap_name = 'custom_cmap'
+custom_cmap = LinearSegmentedColormap.from_list(cmap_name, colors, N=256)
+
+# Create the heatmap plot
+fig, ax = plt.subplots(figsize=(6, 9))
+sc.pl.matrixplot(
+    adata, 
+    var_names=markers,
+    groupby='leiden_renamed',
+    standard_scale='var',
+    cmap=custom_cmap, 
+    swap_axes=True,  
+    ax=ax  
+)
+
+# Adjust x-axis and y-axis labels
+plt.setp(ax.get_xticklabels(), ha="right", rotation=45, fontsize=6)
+plt.setp(ax.get_yticklabels(), fontsize=6)
+
+# Optimize layout and save the figure
+plt.tight_layout()
+plt.savefig(path + 'DNT_heatmap.pdf')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 绘制矩阵图，使用自定义颜色映射方案
+sc.pl.matrixplot(
+    adata, 
+    var_names=markers,
+    groupby='leiden_renamed',
+    standard_scale='var',
+    cmap=custom_cmap,  # 使用自定义颜色映射方案
+    figsize=(9, 6)
+)
+ax = plt.gca()  
+plt.setp(ax.get_xticklabels(), ha="right", rotation_mode="anchor", rotation=45)
+plt.tight_layout()
+plt.savefig(dir + '洋DNT1markers_custom_cmap_accurate.pdf')
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+sc.pl.matrixplot(
+    adata, 
+    var_names=markers,
+    groupby='leiden_renamed',
+    standard_scale='var',
+    cmap='viridis',  # 更改颜色映射方案为'viridis'
+    figsize=(9, 6)
+)
+ax = plt.gca()  
+plt.setp(ax.get_xticklabels(), ha="right", rotation_mode="anchor", rotation=45)
+plt.tight_layout()
+plt.savefig(dir + 'DNT1markers5.pdf')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
