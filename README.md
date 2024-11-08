@@ -18,7 +18,6 @@ The following are the version numbers of the software or algorithms used in this
 	Palantir 1.3.3
 	scanpy 1.10.1
 	monocle3 1.3.1
-	CellphoneDB 5.0.0
 	TCGAbiolinks 2.26.0
 	survival 3.2-10
 	Python 3.9
@@ -57,24 +56,19 @@ Specific descriptions of the codes can be found in the corresponding documents.
 "2_pan-cancer huge group analysis.txt" was used to define overall cellular subpopulations and plot subpopulation umap plots, cell scale plots, and other plots
 
 ### 3. NKT cell
-"1_NKT cell extraction code (marker).txt" was used to extract NKT cell subclusters.
-"2_T_celL_DEGs.txt" was used to plot the umap of T-cell subpopulations, cell scale plots, and other graphs.
+"1_NKT.txt" was used to difine NKT cell subclusters.
 
-"3_AddModule.txt" was used to score T cell subpopulations (e.g., TEFF and TEX scores).
+"2_CD4Tcell.txt" was used to plot the umap of CD4+T-cell subpopulations, cell scale plots, and other graphs.
 
-"4_python_DNT_marker_heatmap.txt" was used to draw the DNT subcluster Marker heat map.
+"3_CD8Tcell.txt" was used to plot the umap of CD8+T-cell subpopulations, cell scale plots, and other graphs.
 
-"5_CD4+CD8+ DNT correlation analysis.txt" was used for correlation analysis between T cell subclusters.
+"4_AddModule.R" was used to score T cell subpopulations (e.g., TEFF and TEX scores).
 
-"6_DNT cell verification.txt" was used to reference external data to verify DNT presence.
+"5_monocle3.R" was used to o characterize the developmental trajectory of T cells(CD4,CD8+DNT).
 
-"7_Heat map of cell ratio and RO.txt" was used to draw heat maps of DNT in different tissue sources with RO enrichment analysis.
+"6_SCENIC_DNT.R" was used to analyze the expression levels of transcription factors in DNT subclusters among different sample groups.
 
-"8_palantir.txt" was used for pseudotiming analysis of T cell subclusters.
-
-"9_machinelearning.txt" was used to construct an immunotherapy prognostic model for the T-cell subcluster combined with the TIGER database.
-
-
+"'7_GSEA.txt' was used to analyze the enrichment of immune pathways for differentially expressed genes (DEGs) in DNT cells
 ### 5. Myeloid cell
 "1_Extracellular matrix scoring.txt" was used to score extracellular matrix remodeling for subclusters of cells between samples.
 
@@ -84,16 +78,7 @@ Specific descriptions of the codes can be found in the corresponding documents.
 
 "4_Prognostic analysis.txt" was used for prognostic analysis of cell subpopulations in the joint the TCGA database.
 
-### 6. B cell
-"1_SCENIC.txt" was used to analyze the expression levels of transcription factors in cellular subclusters among different sample groups.
-
-"2_monocle3.txt" was used to characterize the developmental trajectory of B cells.
-
-"3_Gene_Trajectory.txt" was used to analyze gene trajectory activity in B cells.
-
-"4_cellphoneDB.txt" was used to analyze ligand-receptor pairs between different cell types.
-
-### 7. Generic analysis
+### 6. Generic analysis
 "1_OR.txt" was used to show the dominance ratio of cell subpopulation distribution in each tissue.
 
 "2_GSVA.txt" was used to explore enrichment pathways in cellular subclusters.
