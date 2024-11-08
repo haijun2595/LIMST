@@ -1,0 +1,549 @@
+# Load scanpy environment
+conda activate scanpy_env
+
+# Run Python
+python
+
+# Load packages
+import scanpy as sc
+import os
+import math
+import itertools
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import anndata as ad
+import scipy.sparse
+import scvi
+
+# Load the original quality-controlled pan-cancer data
+adata_all = sc.read_h5ad('/path/adata_qc.h5ad')
+
+# Set save path
+dir= 'path'
+
+# Load NK/T cell data
+adata =  sc.read_h5ad('path/CD8.h5ad')
+
+# Restore the original matrix of NKT cell subsets
+cell_ids = adata.obs_names
+ad = adata_all[cell_ids].copy()
+
+leiden_data = adata.obs['leiden']
+celltype_data = adata.obs['celltype']
+cell_identifier_data=adata.obs['cell_identifier']
+batch_data=adata.obs['batch']
+scvi_batch_data=adata.obs['scvi_batch']
+scvi_labels_data=adata.obs['scvi_labels']
+
+ad.obs['leiden'] = leiden_data
+ad.obs['celltype'] = celltype_data
+ad.obs['cell_identifier'] = cell_identifier_data
+ad.obs['batch'] = batch_data
+ad.obs['scvi_batch'] = scvi_batch_data
+ad.obs['scvi_labels'] = scvi_labels_data
+
+# Assign data to 'adata'
+adata=ad
+
+# Select all ribosomal genes that start with "RPS" or "RPL"
+ribosomal_genes = adata.var_names[adata.var_names.str.startswith(("RPS", "RPL"))]
+
+# Select non-ribosomal genes (not starting with "RPS" or "RPL")
+non_ribosomal_genes = ~adata.var_names.str.startswith(("RPS", "RPL"))
+
+# Remove ribosomal genes, keeping only other genes
+adata = adata[:, non_ribosomal_genes].copy()
+
+# Data normalization
+adata.layers['counts'] = adata.X.copy()
+adata.raw = adata
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+
+# Find highly variable genes
+sc.pp.highly_variable_genes(adata, min_mean=0.0125, max_mean=3, min_disp=0.5)
+adata = adata[:, adata.var.highly_variable]  
+
+# Regress out the effects of cell gene counts and mitochondrial gene percentage
+sc.pp.regress_out(adata, ['total_counts', 'pct_counts_mt'])
+
+# Scale the data
+sc.pp.scale(adata, max_value=10)
+
+# Run PCA
+sc.tl.pca(adata, svd_solver='arpack')
+sc.pl.pca_variance_ratio(adata, log=True)
+
+# Batch correction using SCVI
+scvi.model.SCVI.setup_anndata(adata, layer = "counts", categorical_covariate_keys=["batch"], continuous_covariate_keys=['pct_counts_mt', 'total_counts'])
+model = scvi.model.SCVI(adata)
+model.train()  
+adata.obsm['X_scVI'] = model.get_latent_representation()
+adata.layers['scvi_normalized'] = model.get_normalized_expression(library_size = 1e4)  
+
+# Find neighbors
+sc.pp.neighbors(adata, use_rep = 'X_scVI')
+sc.tl.umap(adata)
+
+adata.write(dir + 'CD8before_resolution_NKT.h5ad')
+
+# Cluster cells with Leiden algorithm
+sc.tl.leiden(adata, resolution = 0.4)
+
+# View cell count per cluster
+leiden_counts = adata.obs['leiden'].value_counts()
+print(leiden_counts)
+
+# Draw violin plot
+plt.close('all')
+plt.rcParams['savefig.dpi'] = 300
+plt.figure(figsize=(20, 10))
+
+sc.pl.violin(
+    adata,
+    ["CD3D","CD3E","CD3G","CD4","CD8A","CD8B","KLRD1","FCGR3A","NKG7","NCAM1","GZMK","FOXP3"], 
+    groupby='leiden',
+    stripplot=False,  
+    jitter=False      
+)
+
+plt.tight_layout()
+
+# Save the violin plot
+plt.savefig(dir + "04_violin_CD8.png", bbox_inches='tight')
+plt.close('all')
+
+# Draw UMAP
+plt.rcParams['savefig.dpi'] = 300
+plt.figure(figsize=(10, 8))
+
+sc.pl.umap(adata, color='leiden', size=20, legend_loc='on data')
+
+plt.tight_layout()
+
+# Save the UMAP plot
+plt.savefig(dir + "04umap_CD8.png", bbox_inches='tight')
+
+# Find marker genes for each cluster
+sc.tl.rank_genes_groups(adata, 'leiden', method='wilcoxon')
+sc.pl.rank_genes_groups(adata, n_genes=25, sharey=False)
+
+# Save data
+adata.write(dir + '04_CD8_DEG.h5ad')
+
+# Load differentially expressed genes and convert to CSV
+result = adata.uns['rank_genes_groups']
+groups = result['names'].dtype.names
+all_groups_df = pd.DataFrame()
+
+for group in groups:
+    group_data = pd.DataFrame({
+        f"{group}_names": result['names'][group],
+        f"{group}_pvals": result['pvals'][group],
+        f"{group}_logfoldchanges": result['logfoldchanges'][group],
+        f"{group}_scores": result['scores'][group]
+    })
+    all_groups_df = pd.concat([all_groups_df, group_data], axis=1)
+
+# Save DataFrame to CSV file
+all_groups_df.to_csv(dir + '04_CD8_DEG.csv', index=False)
+
+# Define CD8 cell subsets
+selected_clusters = ['0', '1', '2', '3', '5', '6', '7', '8','9', '10', '12']
+
+# Filter Leiden clusters
+adata_filtered = CD8_cell[CD8_cell.obs['leiden'].isin(selected_clusters)].copy()
+
+# Rename selected clusters based on provided names
+cluster_rename = {
+    '0': 'CD8_Tn',
+    '1': 'CD8_Tm_CXCR4',
+    '2': 'CD8_Teff',
+    '3': 'CD8_Tex',
+    '5': 'CD8_Teff_DUSP2',
+    '6': 'CD8_Tm',
+    '7': 'CD8_Tex_PDCD1',
+    '8': 'CD8_Tex_LAG3',
+    '9': 'CD8_Tm_CD44',
+    '10': 'CD8_Tex_MKI67',
+    '12': 'CD8_Tm_IL7R'
+}
+adata_filtered.obs['leiden_renamed'] = adata_filtered.obs['leiden'].map(cluster_rename)
+
+# Save the filtered and renamed AnnData object
+save_dir = 'path'
+save_path = save_dir + 'CD8_cells_selected_clusters.h5ad'
+adata_filtered.write(save_path)
+
+# View cluster distribution
+print(adata_filtered.obs['leiden_renamed'].value_counts())
+
+# Extract MLN, PT, NT, Met, Pre groups
+h5ad_file_path = '/mnt/sdb16t/pancancer_NKT/final/CD8/CD8_cells_selected_clusters.h5ad'
+adata = sc.read_h5ad(h5ad_file_path)
+dir = '/mnt/sdb16t/pancancer_NKT/final/CD8/'
+
+# View clustering
+print(adata.obs['leiden_renamed'].value_counts())
+
+# Print sample names
+print("Sample names:")
+print(adata.obs.index[:10].tolist())
+
+# Replace '-' with '_'
+adata.obs['cell_identifier'] = adata.obs['cell_identifier'].str.replace('-', '_')
+
+# Remove last part after '_'
+def remove_last_part(cell_identifier):
+    parts = cell_identifier.split('_')
+    if len(parts) > 1:
+        return '_'.join(parts[:-1])
+    else:
+        return cell_identifier
+
+# Apply function and create new column
+adata.obs['cell_identifier_group'] = adata.obs['cell_identifier'].apply(remove_last_part)
+
+# Extract the last part after '_'
+def extract_last_part(cell_identifier_group):
+    parts = cell_identifier_group.split('_')  # Ensure function parameter is used
+    return parts[-1] if parts else 'Unknown'
+
+# Apply function and create new column
+adata.obs['sample_type'] = adata.obs['cell_identifier_group'].apply(extract_last_part)
+
+# View modified results
+print(adata.obs['sample_type'].head())
+print(adata.obs['sample_type'].value_counts())
+
+# Save
+adata.write_h5ad(os.path.join(dir, 'CD8_cells_selected_samplegroup_clusters.h5ad'))
+
+# Using R language to run #
+# H5ad to rds
+library(sceasy)
+library(reticulate)
+use_python("/home/ps/miniconda3/envs/stlearn_env/bin/python3.8", required = TRUE)
+sceasy::convertFormat("path/CD8_cells_selected_samplegroup_clusters.h5ad", 
+                      from="anndata", to="seurat",
+                      outFile='path//CD8_cells_selected_samplegroup_clusters.rds')
+
+
+# Load packages #
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(viridis)
+library(dplyr)
+
+table(CD8_cell$leiden_renamed)
+CD8_cell$leiden_renamed <- factor(x = CD8_cell$leiden_renamed, levels = c('CD8_Tn','CD8_Tm','CD8_Tm_CXCR4','CD8_Tm_CD44','CD8_Tm_IL7R','CD8_Teff','CD8_Teff_DUSP2','CD8_Tex','CD8_Tex_LAG3','CD8_Tex_MKI67','CD8_Tex_PDCD1'))
+
+# Plot #
+Idents(CD8_cell)="leiden_renamed"
+p=DimPlot(CD8_cell, reduction = "umap",
+          group.by ="leiden_renamed"
+          ,label = F,raster=FALSE)+
+  scale_color_manual(values = c(
+    my36colors <-c('#E59CC4', '#585658','#AB3282','#5F3D69', '#58A4C3','#E63863','#8C549C',
+                   '#BD956A',  '#E0D4CA', '#C5DEBA',
+                   '#9FA3A8',   '#E4C755', '#F7F398',
+                   '#AA9A59', #'#E63863', '#E39A35', '#C1E6F3', '#6778AE', '#91D0BE', #'#B53E2B',
+                   '#712820', '#DCC1DD', '#CCE0F5',  '#CCC9E6', '#625D9E', '#68A180', '#3A6963',
+                   '#968175'
+    )))+
+  theme(panel.border = element_blank(),  
+        axis.line = element_blank(), 
+        axis.text = element_blank(),  
+        axis.ticks = element_blank())+ 
+  labs(title = "Celltype")
+p
+ggsave(filename = "CD8_umap.pdf",p,height =7,width =10)
+ggsave(filename = "CD8_umap.png",p,height =7,width =10)
+
+
+# Plot cell proportion:
+## Stacked bar plot ####
+table(CD8_cell$leiden_renamed)
+Idents(CD8_cell) <- "leiden_renamed"
+new_order <- c('CD8_Tn','CD8_Tm','CD8_Tm_CXCR4','CD8_Tm_CD44','CD8_Tm_IL7R','CD8_Teff','CD8_Teff_DUSP2','CD8_Tex','CD8_Tex_LAG3','CD8_Tex_MKI67','CD8_Tex_PDCD1')
+CD8_cell$leiden_renamed <- factor(CD8_cell $leiden_renamed, levels = new_order)
+#saveRDS(CD8_cell ,file = "/mnt/sdb16t/pancancer_NKT/final/CD8/CD8_GEGs_selected_samplegroup_clusters_new_order.rds")
+
+
+# Activate sample_type #
+Idents(CD8_cell)="sample_type"
+# Create cross variable #
+cellnum <- table(CD8_cell$sample_type, CD8_cell$leiden_renamed)
+cell.prop <- as.data.frame(prop.table(cellnum, 1))
+# View proportion data #
+View(cell.prop)
+colnames(cell.prop) <- c("Group", "Celltype", "Proportion")
+# View sample_type distribution #
+table(CD8_cell$sample_type)
+# Set new order #
+new_order <- c("PT","Met","MLN","Pre","NT")
+cell.prop$Group <- factor(cell.prop$Group, levels = new_order)
+colors <- c('#E59CC4', '#585658','#AB3282','#5F3D69', '#58A4C3','#E63863','#8C549C',
+            '#BD956A',  '#E0D4CA', '#C5DEBA',
+            '#9FA3A8')
+
+
+p <- ggplot(cell.prop, aes(x = Group, y = Proportion, fill = Celltype)) +
+  geom_bar(stat = "identity", position = "stack", color = "white", size = 0.11) + 
+  scale_fill_manual(values = colors) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black"),
+    plot.margin = unit(c(1, 1, 1, 1), "lines"),
+    axis.text.x = element_text(size = rel(1), angle = 45, hjust = 1),
+    axis.text.y = element_text(size = rel(1))
+  )
+p
+ggsave("CD8_cell_porprotion.pdf",p,width = 6, height = 5)
+ggsave("CD8_cell_porprotion.png",p,width = 6, height = 5)
+
+## Plot bubble plot ####
+library(RColorBrewer) 
+library(viridis)
+library(wesanderson)
+# library(SingleCellExperiment)
+rm(list=ls())
+CD8_cell <- readRDS("/mnt/sdb16t/pancancer_NKT/final/CD8/CD8_cells_selected_samplegroup_clusters.rds")
+table(CD8_cell@meta.data$leiden_renamed)
+## Color palette for the article ####
+colors <- c("#EFE2AA",
+            "#83B4EF",
+            "#DBC9B3",
+            "#8ECFF8",
+            "#7EC0C3",
+            "#EED0E0",
+            "#EBAEA9",
+            "#95A6DA",
+            "#BFA6C9",
+            "#F5E0BA",
+            "#AED0DF",
+            "#89B780",
+            "#F5D8D0",
+            "#CB95BB",
+            "#AAD0AC",
+            "#D2EBC8",
+            "#3C77AF",
+            "#D0AFC4",
+            "#AECDE1",
+            "#7DBFA7",
+            "#F5D2A8",
+            "#BBDD78",
+            "#EE934E",
+            "#F5CFE4",
+            "#8FA4AE",
+            "#FCED82",
+            "#B383B9")
+
+
+n <- 30
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1,n), col=sample(col_vector, n))
+color = grDevices::colors()[grep('gr(a|e)y', grDevices::colors(), invert = T)]
+pie(rep(6,n), col=sample(color, n))
+col_vector
+col_vector =c(wes_palette("Darjeeling1"), wes_palette("GrandBudapest1"), wes_palette("Cavalcanti1"), wes_palette("GrandBudapest2"), wes_palette("FantasticFox1"))
+pal <- wes_palette("Zissou1", 10, type = "continuous")
+pal2 <- wes_palette("Zissou1", 5, type = "continuous")
+pal[3:10]
+# Plot dotplot
+final.markers <- c(
+  'CCR7', 'SELL', 'LEF1',
+  'TCF7', 'IL7R', 'CCR6','CXCR4',
+  'CD44','CD69', 'ITGA1', 'GZMK','GZMA',
+  'GZMM',
+  'DUSP2','NKG7',  'CST7',
+  'IFNG', 'LAG3','TIGIT', 'HAVCR2',
+  'PDCD1', 'CTLA4','TOX',
+  'MKI67', 'TOP2A', 'BIRC5', 'CDK1'
+)
+
+table(CD8_cell$leiden_renamed)
+CD8_cell$leiden_renamed <- factor(x = CD8_cell$leiden_renamed, levels = c('CD8_Tn','CD8_Tm_CXCR4','CD8_Tm','CD8_Tm_CD44','Tm_IL7R','CD8_Teff','CD8_Teff_DUSP2','CD8_Tex','CD8_Tex_PDCD1','CD8_Tex_LAG3','CD8_Tex_MKI67'))
+Idents(CD8_cell) <- "leiden_renamed"
+
+##  RotatedAxis() scale_colour_gradientn
+p <- DotPlot(CD8_cell, features = final.markers, dot.scale = 10) + 
+  RotatedAxis() +
+  theme(
+    axis.text.x = element_text(angle = 45, face="italic", hjust=1), 
+    axis.text.y = element_text(face="bold"),
+    legend.position="right",
+    panel.border = element_rect(color = "black", size = 1.5, linetype = "solid"), 
+    axis.title = element_blank() 
+  ) + 
+  scale_colour_gradientn(colours = pal) +
+  labs(title = "celltype markers", y = "", x="")
+
+# View final.markers list
+print(final.markers)
+
+# Check if these genes exist in the Seurat object
+final.markers[!final.markers %in% rownames(CD8_cell)]
+
+ggsave(filename = "CD8_BubblePlot_markers.pdf",p,width = 16,height = 8)
+dev.off()
+
+
+# Functional gene bubble plot for DNT and CD8 #
+rm(list = ls())
+# Load packages #
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(viridis)
+library(RColorBrewer) 
+library(viridis)
+library(wesanderson)
+DNT <- readRDS("path/DNT.rds")
+CD8 <- readRDS("path/CD8_cells_selected_clusters.rds")
+colnames(DNT@meta.data)
+colnames(CD8@meta.data
+
+Tcell <- merge(CD8, DNT)
+Tcell@active.ident <- as.factor(Tcell@meta.data$leiden_renamed)
+table(Tcell@active.ident)
+Tcell <- NormalizeData(Tcell)
+
+## Color palette for the article ####
+colors <- c("#EFE2AA",
+            "#83B4EF",
+            "#DBC9B3",
+            "#8ECFF8",
+            "#7EC0C3",
+            "#EED0E0",
+            "#EBAEA9",
+            "#95A6DA",
+            "#BFA6C9",
+            "#F5E0BA",
+            "#AED0DF",
+            "#89B780",
+            "#F5D8D0",
+            "#CB95BB",
+            "#AAD0AC",
+            "#D2EBC8",
+            "#3C77AF",
+            "#D0AFC4",
+            "#AECDE1",
+            "#7DBFA7",
+            "#F5D2A8",
+            "#BBDD78",
+            "#EE934E",
+            "#F5CFE4",
+            "#8FA4AE",
+            "#FCED82",
+            "#B383B9")
+
+
+n <- 30
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1,n), col=sample(col_vector, n))
+color = grDevices::colors()[grep('gr(a|e)y', grDevices::colors(), invert = T)]
+pie(rep(6,n), col=sample(color, n))
+col_vector
+col_vector =c(wes_palette("Darjeeling1"), wes_palette("GrandBudapest1"), wes_palette("Cavalcanti1"), wes_palette("GrandBudapest2"), wes_palette("FantasticFox1"))
+pal <- wes_palette("Zissou1", 10, type = "continuous")
+pal2 <- wes_palette("Zissou1", 5, type = "continuous")
+pal[3:10]
+# Plot dotplot
+final.markers <- c(
+  "CD3D","CD3E", "CD3G", "CD8B","CD8A", "IFNG", "IL2", "TNF", 
+  "IL17A", "GZMA", "GZMB", "GZMK", 
+  "TNFRSF9","PRF1",  "HAVCR2", 
+  "TIGIT", "LAG3", "CXCL13", "PDCD1",  "CD69", 
+  "TCF7", "IL7R", "SELL", "CCR7", "MKI67", 
+  "TOP2A"
+)
+
+table(Tcell$leiden_renamed)
+##  RotatedAxis() scale_colour_gradientn
+p <- DotPlot(Tcell, features = final.markers, dot.scale = 10, group.by = "leiden_renamed") + 
+  RotatedAxis() +
+  theme(
+    axis.text.x = element_text(angle = 45, face="italic", hjust=1), 
+    axis.text.y = element_text(face="bold"),
+    legend.position="right",
+    panel.border = element_rect(color = "black", size = 1.5, linetype = "solid"), 
+    axis.title = element_blank() 
+  ) + 
+  scale_colour_gradientn(colours = c("#f7fbff", "#6baed6", "#08519c")) + 
+  labs(title = "celltype markers", y = "", x="")
+
+print(final.markers)
+ggsave(filename = "DNT_CD8_BubblePlot_markers.pdf",p,width = 16,height = 6)
+dev.off()
+
+
+# CD8 proportion in tumor tissue #
+
+table(CD8_cells_selected_samplegroup_clusters$leiden_renamed)
+table(CD8_cells_selected_samplegroup_clusters$sample_type)
+Idents(CD8_cells_selected_samplegroup_clusters)="sample_type"
+CD8_cancer=subset(CD8_cells_selected_samplegroup_clusters,idents = c("MLN","Met","PT","Pre"))
+table(CD8_cancer@active.ident)
+
+View(CD8_cancer@meta.data)
+CD8_cancer$sample_type=CD8_cancer@active.ident
+table(CD8_cancer$sample_type)
+# Add cancer sample #
+# Extract row names
+rownames_CD8_cancer<- rownames(CD8_cancer@meta.data)
+first_part <- sapply(rownames_CD8_cancer, function(x) unlist(strsplit(x, "_"))[1])
+# Add the extracted first part as a new column to metadata #
+CD8_cancer@meta.data$cancer_samples <- first_part
+CD8_cancer@meta.data$cancer_samples
+CD8_cancer$cancer_samples=as.factor(CD8_cancer$cancer_samples)
+
+# Stacked bar plot #
+###### Extract only cancer types
+cell.group <- CD8_cancer
+table(cell.group$leiden_renamed)
+table(CD8_cancer$cancer_samples)
+Idents(cell.group) <-"leiden_renamed"  
+cell.group@meta.data$celltype <- cell.group@active.ident
+table(cell.group$celltype)
+cellnum <- table(cell.group$celltype,cell.group$cancer_samples)
+cell.prop<-as.data.frame(prop.table(cellnum,1))  
+View(cell.prop)
+colnames(cell.prop)<-c("Celltype","Group","Proportion")  
+table(cell.group$celltype)
+
+# Color palette for the article #
+my36colors <-c('#E5D2DD', '#53A85F', '#F1BB72', '#F3B1A0', '#D6E7A3', '#57C3F3', '#476D87',
+               '#E95C59', '#E59CC4', '#AB3282', '#23452F', '#BD956A', '#8C549C', '#585658',
+               '#9FA3A8', '#E0D4CA', '#5F3D69', '#C5DEBA', '#58A4C3', '#E4C755', '#F7F398',
+               '#AA9A59', '#E63863', '#E39A35', '#C1E6F3', '#6778AE', '#91D0BE', '#B53E2B',
+               '#712820', '#DCC1DD', '#CCE0F5',  '#CCC9E6', '#625D9E', '#68A180', '#3A6963',
+               '#968175'
+)
+
+
+p <- ggplot(cell.prop, aes(x = Celltype, y = Proportion, fill = Group)) +
+  geom_bar(stat = "identity", position = "stack", color = "white", size = 0.11) +
+  scale_fill_manual(values = my36colors) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black"),
+    plot.margin = unit(c(1, 1, 1, 1), "lines"),
+    axis.text.x = element_text(size = rel(1), angle = 45, hjust = 1),
+    axis.text.y = element_text(size = rel(1))
+  )
+p
+ggsave("CD8 _cancer.pdf",p,width = 10, height = 8)
+

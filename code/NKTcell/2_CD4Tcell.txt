@@ -1,0 +1,478 @@
+# Load the scanpy environment
+conda activate scanpy_env
+
+# Run Python
+python
+
+# Load packages
+import scanpy as sc
+import os
+import math
+import itertools
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import anndata as ad
+import scipy.sparse
+import scvi
+
+# Load the original pancancer data after quality control
+adata_all = sc.read_h5ad('path/adata_qc.h5ad')
+
+# Define the save path
+dir = 'path'
+
+# Load NK/T data
+adata = sc.read_h5ad('path/CD4.h5ad')
+
+# Restore the original matrix of NK/T cell subtypes; further normalization and scaling are needed for NK/T cells
+cell_ids = adata.obs_names
+ad = adata_all[cell_ids].copy()
+
+leiden_data = adata.obs['leiden']
+celltype_data = adata.obs['celltype']
+cell_identifier_data = adata.obs['cell_identifier']
+batch_data = adata.obs['batch']
+scvi_batch_data = adata.obs['scvi_batch']
+scvi_labels_data = adata.obs['scvi_labels']
+
+ad.obs['leiden'] = leiden_data
+ad.obs['celltype'] = celltype_data
+ad.obs['cell_identifier'] = cell_identifier_data
+ad.obs['batch'] = batch_data
+ad.obs['scvi_batch'] = scvi_batch_data
+ad.obs['scvi_labels'] = scvi_labels_data
+
+# Assign the data to adata
+adata = ad
+
+# Select all ribosomal genes that start with "RPS" or "RPL"
+ribosomal_genes = adata.var_names[adata.var_names.str.startswith(("RPS", "RPL"))]
+
+# Select genes that do not start with "RPS" or "RPL"
+non_ribosomal_genes = ~adata.var_names.str.startswith(("RPS", "RPL"))
+
+# Remove genes starting with "RPS" or "RPL"
+adata = adata[:, non_ribosomal_genes].copy()
+
+# Data normalization
+adata.layers['counts'] = adata.X.copy()
+adata.raw = adata
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+
+# Identify highly variable genes
+sc.pp.highly_variable_genes(adata, min_mean=0.0125, max_mean=3, min_disp=0.5)
+adata = adata[:, adata.var.highly_variable]
+
+# Correct for the influence of total gene counts and mitochondrial gene proportion
+sc.pp.regress_out(adata, ['total_counts', 'pct_counts_mt'])
+
+# Data scaling
+sc.tl.pca(adata, svd_solver='arpack')
+sc.pl.pca_variance_ratio(adata, log=True)
+
+# SCVI batch correction
+scvi.model.SCVI.setup_anndata(adata, layer="counts", categorical_covariate_keys=["batch"], continuous_covariate_keys=['pct_counts_mt', 'total_counts'])
+model = scvi.model.SCVI(adata)
+model.train()
+adata.obsm['X_scVI'] = model.get_latent_representation()
+adata.layers['scvi_normalized'] = model.get_normalized_expression(library_size=1e4)
+
+# Find neighbors
+sc.pp.neighbors(adata, use_rep='X_scVI')
+sc.tl.umap(adata)
+adata.write(dir + 'CD4before_resolution_NKT.h5ad')
+
+# Resolution setting
+sc.tl.leiden(adata, resolution=0.4)
+
+# Check cell count for each cluster
+leiden_counts = adata.obs['leiden'].value_counts()
+print(leiden_counts)
+
+# Plot violin plot
+plt.rcParams['savefig.dpi'] = 300
+plt.figure(figsize=(20, 10))
+sc.pl.violin(
+    adata,
+    ["SELL", "CCR7", "LEF1", "TCF7", "IL7R", "CD44", "CD69", "GPR183", "LTB", "FOXP3", "IL2RA", "BATF", "CTLA4", "TIGIT", "PDCD1", "MKI67", "TOP2A", "CDK1", "BIRC5", "HSPD1", "NR4A1", "BAG3", "FOS", "JUN"],
+    groupby='leiden',
+    stripplot=False,
+    jitter=False
+)
+
+plt.tight_layout()
+
+# Save the plot
+plt.savefig(dir + "04_CD4violin.png", bbox_inches='tight')
+
+# Plot UMAP
+plt.rcParams['savefig.dpi'] = 300
+plt.figure(figsize=(10, 8))
+sc.pl.umap(adata, color='leiden', size=20, legend_loc='on data')
+plt.tight_layout()
+
+# Save the UMAP plot
+plt.savefig(dir + "04_umap_CD4.png", bbox_inches='tight')
+
+# Plot UMAP with customized settings
+plt.rcParams['savefig.dpi'] = 300
+plt.figure(figsize=(10, 8))
+sc.pl.umap(
+    adata,
+    color='leiden',
+    size=20,
+    legend_loc='right margin',
+    legend_fontsize=12,
+    title="UMAP with Cluster Labels",
+    frameon=False,
+)
+
+plt.tight_layout()
+
+# Save the UMAP plot
+plt.savefig(dir + "04_umap_CD4_labeled_right.png", bbox_inches='tight')
+
+# Plot dot plot
+sc.pl.dotplot(
+    adata,
+    var_names=["CD3D", "CD3E", "CD3G", "CD4", "CD8A", "CD8B", "KLRD1", "FCGR3A", "NCAM1", "SELL", "CCR7", "FOXP3", "IL2RA", "MKI67", "TOP2A", "IGKC", "IGHA1", "IGLC2"],
+    groupby='leiden',
+    standard_scale='var',
+    dot_max=1,
+    color_map='Blues'
+)
+
+# Save the dot plot
+plt.savefig(dir + "04_dotplot_CD4.png", bbox_inches='tight')
+plt.savefig(dir + "04_dotplot_CD4.pdf", bbox_inches='tight')
+plt.close('all')
+
+sc.tl.rank_genes_groups(adata, 'leiden', method='wilcoxon')
+sc.pl.rank_genes_groups(adata, n_genes=25, sharey=False)
+adata.write(dir + '04_CD4_DEG.h5ad')
+
+# Load differentially expressed genes and convert to CSV
+# Extract rank_genes_groups result
+result = adata.uns['rank_genes_groups']
+
+# Get the names of all groups
+groups = result['names'].dtype.names
+
+# Create an empty DataFrame to save data for all groups
+all_groups_df = pd.DataFrame()
+
+# Iterate over all groups and add each group's data to the DataFrame
+for group in groups:
+    group_data = pd.DataFrame({
+        f"{group}_names": result['names'][group],
+        f"{group}_pvals": result['pvals'][group],
+        f"{group}_logfoldchanges": result['logfoldchanges'][group],
+        f"{group}_scores": result['scores'][group]
+    })
+    all_groups_df = pd.concat([all_groups_df, group_data], axis=1)
+
+all_groups_df.to_csv(dir + '04_CD4_DEG_gene.csv', index=False)
+
+# Subgroup definition
+selected_clusters = ['0', '1', '2', '7', '8', '10']
+
+# Filter data based on Leiden clusters
+adata_filtered = CD4_cell[CD4_cell.obs['leiden'].isin(selected_clusters)].copy()
+
+# Rename the selected clusters based on provided names
+cluster_rename = {
+    '0': 'CD4_Treg_TIGIT',
+    '1': 'CD4_Tm_CXCR4',
+    '2': 'CD4_Tn',
+    '7': 'CD4_Tm',
+    '8': 'CD4_Treg_MKI67',
+    '10': 'CD4_Tn'
+}
+adata_filtered.obs['leiden_renamed'] = adata_filtered.obs['leiden'].map(cluster_rename)
+
+# Save AnnData object to the specified directory
+save_dir = 'path/'
+save_path = save_dir + 'CD4_cells_selected_clusters.h5ad'
+adata_filtered.write(save_path)
+
+# Extract MLN, PT, NT, Met, Pre groups
+adata = adata_filtered
+
+# Replace '-' with '_'
+adata.obs['cell_identifier'] = adata.obs['cell_identifier'].str.replace('-', '_')
+
+# Remove the last part after '_'
+adata.obs['cell_identifier'] = adata.obs['cell_identifier'].str.replace('-', '_')
+
+def remove_last_part(cell_identifier):
+    parts = cell_identifier.split('_')
+    if len(parts) > 1:
+        return '_'.join(parts[:-1])
+    else:
+        return cell_identifier
+
+# Apply the function and create a new column
+adata.obs['cell_identifier_group'] = adata.obs['cell_identifier'].apply(remove_last_part)
+
+# Preview the result
+print(adata.obs['cell_identifier_group'].head())
+
+# Extract the last part after '_'
+def extract_last_part(cell_identifier_group):
+    parts = cell_identifier_group.split('_')
+    return parts[-1] if parts else 'Unknown'
+
+# Apply the function and create a new column
+adata.obs['sample_type'] = adata.obs['cell_identifier_group'].apply(extract_last_part)
+
+# Verify the modified result
+print(adata.obs['sample_type'].head())
+
+# View count of each sample_group
+print(adata.obs['sample_type'].value_counts())
+
+# Save the data
+adata.write_h5ad(os.path.join(dir, 'CD4_cells_selected_samplegroup_clusters.h5ad'))
+
+
+
+# Convert H5ad to RDS in Rstudio
+# Load the necessary libraries in R
+
+library(sceasy)
+library(reticulate)
+use_python("/home/ps/miniconda3/envs/stlearn_env/bin/python3.8", required = TRUE)
+sceasy::convertFormat("path/CD4_cells_selected_samplegroup_clusters.h5ad", 
+                      from="anndata", to="seurat",
+                      outFile='path/CD4_cells_selected_samplegroup_clusters.rds')
+
+CD4_cell <- readRDS("pathCD4_cells_selected_samplegroup_clusters.rds")
+head(CD4_cell@assays$RNA@counts, 10)
+table(CD4_cell@meta.data$leiden_renamed)
+
+# Plotting
+# Load packages
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(viridis)
+library(RColorBrewer)
+library(viridis)
+library(wesanderson)
+
+CD4_cell <- readRDS("path/CD4_cells_selected_samplegroup_clusters.rds")
+setwd("path")
+table(CD4_cell@meta.data$leiden_renamed)
+
+# Color scheme for the paper
+colors <- c("#EFE2AA",
+            "#83B4EF",
+            "#DBC9B3",
+            "#8ECFF8",
+            "#7EC0C3",
+            "#EED0E0",
+            "#EBAEA9",
+            "#95A6DA",
+            "#BFA6C9",
+            "#F5E0BA",
+            "#AED0DF",
+            "#89B780",
+            "#F5D8D0",
+            "#CB95BB",
+            "#AAD0AC",
+            "#D2EBC8",
+            "#3C77AF",
+            "#D0AFC4",
+            "#AECDE1",
+            "#7DBFA7",
+            "#F5D2A8",
+            "#BBDD78",
+            "#EE934E",
+            "#F5CFE4",
+            "#8FA4AE",
+            "#FCED82",
+            "#B383B9")
+
+n <- 30
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1, n), col=sample(col_vector, n))
+color = grDevices::colors()[grep('gr(a|e)y', grDevices::colors(), invert = T)]
+pie(rep(6, n), col=sample(color, n))
+col_vector
+col_vector = c(wes_palette("Darjeeling1"), wes_palette("GrandBudapest1"), wes_palette("Cavalcanti1"), wes_palette("GrandBudapest2"), wes_palette("FantasticFox1"))
+pal <- wes_palette("Zissou1", 10, type = "continuous")
+pal2 <- wes_palette("Zissou1", 5, type = "continuous")
+pal[3:10]
+
+# Plot dot plot
+final.markers <- c(
+  'SELL', 'CCR7', 'LEF1',
+  'TCF7', 'IL7R', 'CD44', 'CD69',
+  'GPR183',  'FOXP3', 'IL2RA', 'BATF',
+  'CTLA4', 'TIGIT',
+  'MKI67', 'TOP2A', 'CDK1', 'BIRC5'
+)
+
+table(CD4_cell$leiden_renamed)
+CD4_cell$leiden_renamed <- factor(x = CD4_cell$leiden_renamed, levels = c('CD4_Tn','CD4_Tm_CXCR4','CD4_Tm','CD4_Treg_MKI67','CD4_Treg_TIGIT'))
+Idents(CD4_cell) <- "leiden_renamed"
+
+p <- DotPlot(CD4_cell, features = final.markers, dot.scale = 10) + 
+  RotatedAxis() +
+  theme(
+    axis.text.x = element_text(angle = 45, face="italic", hjust=1), 
+    axis.text.y = element_text(face="bold"),
+    legend.position="right",
+    panel.border = element_rect(color = "black", size = 1.5, linetype = "solid"),
+    axis.title = element_blank() 
+  ) + 
+  scale_colour_gradientn(colours = pal) +
+  labs(title = "celltype markers", y = "", x="")
+
+ggsave(filename = "CD4_markers.pdf", p, width = 10, height = 4)
+dev.off()
+
+# Plot UMAP
+# Load packages
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(viridis)
+table(CD4_cell$leiden_renamed)
+CD4_cell$leiden_renamed <- factor(x = CD4_cell$leiden_renamed, levels = c('CD4_Tn','CD4_Tm_CXCR4','CD4_Tm','CD4_Treg_MKI67','CD4_Treg_TIGIT'))
+
+# Plot UMAP
+Idents(CD4_cell)="leiden_renamed"
+p=DimPlot(CD4_cell, reduction = "umap",
+          group.by ="leiden_renamed"
+          ,label = F,raster=FALSE)+
+  scale_color_manual(values = c(
+    my36colors <-c('#E5D2DD', '#E95C59','#F1BB72', '#F3B1A0', '#D6E7A3', '#57C3F3', '#476D87',
+                    '#53A85F', '#E59CC4', '#AB3282','#23452F',
+                   '#BD956A', '#8C549C', '#585658',
+                   '#9FA3A8', '#E0D4CA', '#5F3D69', '#C5DEBA', '#58A4C3', '#E4C755', '#F7F398',
+                   '#AA9A59', '#E63863', '#E39A35', '#C1E6F3', '#6778AE', '#91D0BE', '#B53E2B',
+                   '#712820', '#DCC1DD', '#CCE0F5',  '#CCC9E6', '#625D9E', '#68A180', '#3A6963',
+                   '#968175'
+    )))+
+  theme(panel.border = element_blank(),  
+        axis.line = element_blank(), 
+        axis.text = element_blank(),  
+        axis.ticks = element_blank())+ 
+  labs(title = "Celltype")
+p
+ggsave(filename = "CD4_umap.pdf", p, height =7, width =10)
+ggsave(filename = "CD4_umap.png", p, height =7, width =10)
+
+# Stacked bar plot
+# Check cell names for leiden_renamed
+table(CD4_cell$leiden_renamed)
+Idents(CD4_cell) <- "leiden_renamed"
+new_order <- c('CD4_Tn','CD4_Tm_CXCR4','CD4_Tm','CD4_Treg_MKI67','CD4_Treg_TIGIT')
+CD4_cell$leiden_renamed <- factor(CD4_cell $leiden_renamed, levels = new_order)
+
+# Activate sample_type
+Idents(CD4_cell)="sample_type"
+
+# Create cross variable
+cellnum <- table(CD4_cell$sample_type, CD4_cell$leiden_renamed)
+cell.prop <- as.data.frame(prop.table(cellnum, 1))
+
+# Rename columns in cell.prop
+colnames(cell.prop) <- c("Group", "Celltype", "Proportion")
+
+# View distribution of sample_type
+table(CD4_cell$sample_type)
+
+# Set new order
+new_order <- c("PT","Met","MLN","Pre","NT")
+
+# Convert Group column in cell.prop to a factor
+cell.prop$Group <- factor(cell.prop$Group, levels = new_order)
+
+# Color scheme for the paper
+colors <- c('#E5D2DD', '#E95C59', '#F1BB72', '#F3B1A0', '#D6E7A3')
+
+p <- ggplot(cell.prop, aes(x = Group, y = Proportion, fill = Celltype)) +
+  geom_bar(stat = "identity", position = "stack", color = "white", size = 0.11) + 
+  scale_fill_manual(values = colors) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black"),
+    plot.margin = unit(c(1, 1, 1, 1), "lines"),
+    axis.text.x = element_text(size = rel(1), angle = 45, hjust = 1),
+    axis.text.y = element_text(size = rel(1))
+  )
+p
+ggsave("CD4_cell_proportion.pdf", p, width = 6, height = 5)
+ggsave("CD4_cell_proportion.png", p, width = 6, height = 5)
+dev.off()
+
+# Proportion plot of CD4 cells in tumor tissue
+table(CD4_cells_selected_samplegroup_clusters$leiden_renamed)
+table(CD4_cells_selected_samplegroup_clusters$sample_type)
+Idents(CD4_cells_selected_samplegroup_clusters)="sample_type"
+CD4_cancer=subset(CD4_cells_selected_samplegroup_clusters, idents = c("MLN","Met","PT","Pre"))
+table(CD4_cancer@active.ident)
+
+View(CD4_cancer@meta.data)
+CD4_cancer$sample_type=CD4_cancer@active.ident
+table(CD4_cancer$sample_type)
+
+# Add cancer sample information
+# Extract row names
+rownames_CD4_cancer <- rownames(CD4_cancer@meta.data)
+first_part <- sapply(rownames_CD4_cancer, function(x) unlist(strsplit(x, "_"))[1])
+
+# Add the extracted first part as a new column to the metadata
+CD4_cancer@meta.data$cancer_samples <- first_part
+CD4_cancer@meta.data$cancer_samples
+CD4_cancer$cancer_samples = as.factor(CD4_cancer$cancer_samples)
+
+# Stacked bar plot
+# Extract only cancer types
+cell.group <- CD4_cancer
+table(cell.group$leiden_renamed)
+table(CD4_cancer$cancer_samples)
+Idents(cell.group) <-"leiden_renamed"  
+cell.group@meta.data$celltype <- cell.group@active.ident
+table(cell.group$celltype)
+cellnum <- table(cell.group$celltype, cell.group$cancer_samples)
+cell.prop <- as.data.frame(prop.table(cellnum, 1))
+View(cell.prop)
+colnames(cell.prop) <- c("Celltype", "Group", "Proportion")
+
+table(cell.group$celltype)
+
+# Color scheme for the paper
+my36colors <- c('#E5D2DD', '#53A85F', '#F1BB72', '#F3B1A0', '#D6E7A3', '#57C3F3', '#476D87',
+               '#E95C59', '#E59CC4', '#AB3282', '#23452F', '#BD956A', '#8C549C', '#585658',
+               '#9FA3A8', '#E0D4CA', '#5F3D69', '#C5DEBA', '#58A4C3', '#E4C755', '#F7F398',
+               '#AA9A59', '#E63863', '#E39A35', '#C1E6F3', '#6778AE', '#91D0BE', '#B53E2B',
+               '#712820', '#DCC1DD', '#CCE0F5',  '#CCC9E6', '#625D9E', '#68A180', '#3A6963',
+               '#968175'
+)
+
+p <- ggplot(cell.prop, aes(x = Celltype, y = Proportion, fill = Group)) +
+  geom_bar(stat = "identity", position = "stack", color = "white", size = 0.11) +
+  scale_fill_manual(values = my36colors) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour = "black"),
+    plot.margin = unit(c(1, 1, 1, 1), "lines"),
+    axis.text.x = element_text(size = rel(1), angle = 45, hjust = 1),
+    axis.text.y = element_text(size = rel(1))
+  )
+p
+ggsave("CD4_cancer.pdf", p, width = 10, height = 8)

@@ -1,0 +1,85 @@
+##2_GSVA.txt" was used to explore enrichment pathways in cellular subclusters.
+##GO###
+library(readxl)
+library(clusterProfiler)
+library(ggplot2)
+library(enrichplot)
+library(GOplot)
+library(DOSE)
+library(stringr)
+
+DEG <- read.csv("DNT_DEG.csv")
+DEG <- DEG[,-2]
+filtered_results <- DEG[DEG$p_val < 0.05 & DEG$avg_log2FC > 0, ]
+data <- filtered_results
+gene <- bitr(data$X,fromType = 'SYMBOL',toType = 'ENTREZID',OrgDb = 'org.Hs.eg.db') 
+
+GO<-enrichGO(
+  gene$ENTREZID,
+  OrgDb = 'org.Hs.eg.db',
+  keyType = "ENTREZID",
+  ont = "ALL",
+  pvalueCutoff = 0.01,
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  minGSSize = 50,
+  maxGSSize = 500,
+  readable = TRUE)
+
+write.table(GO,file="GSEA_GO01.txt",sep="\t",
+            quote=F,row.names = F)
+save(GO, file = "go.Rda")
+
+KEGG <- enrichKEGG(
+  gene$ENTREZID,
+  organism = "hsa", 
+  keyType = "kegg",
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  minGSSize = 10,
+  maxGSSize = 500,
+  qvalueCutoff = 0.05,
+  use_internal_data = FALSE) 
+
+write.table(GO,file="GSEA_KEGG.txt",sep="\t",
+            quote=F,row.names = F)
+
+##Screening for immune-related GOs
+immune_terms <- c("T cell", "immune", "immune response")
+
+######immune_terms <- c("T cell activation", 
+#                 "regulation of immune effector process", 
+#                 "immune response-regulating signaling pathway", 
+#                  "regulation of T cell activation", 
+#                  "regulation of adaptive immune response")
+
+immune_GO <- GO[GO$Description %in% immune_terms, ]
+
+p <- ggplot(immune_GO, aes(x = reorder(Description, Count), y = Count)) +
+  geom_bar(stat = "identity", fill = "navy") +
+  coord_flip() +
+  facet_grid(ONTOLOGY~., scale = "free") +
+  labs(x = "GO Terms", y = "Gene Count", title = "Immune-Related GO Terms") +
+  theme(axis.text.y = element_text(size = 10)) +
+  scale_y_discrete(labels = function(x) stringr::str_wrap(x, width = 80))
+
+ggsave("immune_GO_upregulation.pdf", plot = p, width = 10, height = 8)
+
+barplot(GO, split="ONTOLOGY")+facet_grid(ONTOLOGY~., scale="free") +
+  scale_y_discrete(labels = function(x) stringr::str_wrap(x, width = 80)) 
+#dotplot(GO, split="ONTOLOGY")+facet_grid(ONTOLOGY~., scale="free")
+
+##KEGG
+barplot(KEGG,showCategory = 30,title = 'KEGG Pathway')
+
+library("pathview")
+gene$ENTREZID <- as.numeric(gene$ENTREZID )
+pathview(gene.data = gene$ENTREZID, 
+         pathway.id = "hsa00010", 
+         species = "hsa",
+         out.suffix = "hsa00010.2layer", 
+         kegg.native = T, same.layer = F)
+
+
+
+

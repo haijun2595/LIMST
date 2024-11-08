@@ -1,0 +1,275 @@
+##The subtype analysis of NK/T cells
+##load scanpy##
+conda activate scanpy_env
+##python#
+python
+##load#
+import scanpy as sc
+import os
+import math
+import itertools
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import anndata as ad
+import scipy.sparse
+import scvi
+##Load the raw pan-cancer data after quality control##
+adata_all = sc.read_h5ad('/path/adata_qc.h5ad')
+##save path#
+dir= '/path/'
+##load NKT##
+adata =  sc.read_h5ad('/path/NKT.h5ad')
+####Extract the cells from adata.obs to create a new raw matrix, and extract the matching raw data from adata_all into adata##
+cell_ids = adata.obs_names
+ad = adata_all[cell_ids].copy()
+leiden_data = adata.obs['leiden']
+celltype_data = adata.obs['celltype']
+cell_identifier_data=adata.obs['cell_identifier']
+batch_data=adata.obs['batch']
+scvi_batch_data=adata.obs['scvi_batch']
+scvi_labels_data=adata.obs['scvi_labels']
+
+ad.obs['leiden'] = leiden_data
+ad.obs['celltype'] = celltype_data
+ad.obs['cell_identifier'] = cell_identifier_data
+ad.obs['batch'] = batch_data
+ad.obs['scvi_batch'] = scvi_batch_data
+ad.obs['scvi_labels'] = scvi_labels_data
+##
+adata=ad
+## "Filter out all ribosomal genes starting with 'RPS' or 'RPL'."##
+ribosomal_genes = adata.var_names[adata.var_names.str.startswith(("RPS", "RPL"))]
+# #Filter out genes that do not start with 'RPS' or 'RPL'."##
+non_ribosomal_genes = ~adata.var_names.str.startswith(("RPS", "RPL"))
+
+"Remove genes that start with 'RPS' or 'RPL'."
+adata = adata[:, non_ribosomal_genes].copy()
+
+
+##Data normalization##
+adata.layers['counts'] = adata.X.copy()
+adata.raw = adata
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+##Highly variable genes##
+sc.pp.highly_variable_genes(adata, min_mean=0.0125, max_mean=3, min_disp=0.5)
+adata = adata[:, adata.var.highly_variable] 
+##Correct for the effects of cell gene counts and mitochondrial gene proportion##
+sc.pp.regress_out(adata, ['total_counts', 'pct_counts_mt'])  
+##Scale the data in preparation for PCA.#
+sc.pp.scale(adata, max_value=10)
+###run PCA###
+sc.tl.pca(adata, svd_solver='arpack')
+sc.pl.pca_variance_ratio(adata, log=True)
+####Batch correction using SCVI##
+scvi.model.SCVI.setup_anndata(adata, layer = "counts", categorical_covariate_keys=["batch"], continuous_covariate_keys=['pct_counts_mt', 'total_counts'])
+model = scvi.model.SCVI(adata)
+model.train()  
+adata.obsm['X_scVI'] = model.get_latent_representation()
+adata.layers['scvi_normalized'] = model.get_normalized_expression(library_size = 1e4) 
+
+##Find neighbors.##
+sc.pp.neighbors(adata, use_rep = 'X_scVI')
+sc.tl.umap(adata)
+adata.write(dir + 'before_resolution_NKT.h5ad')
+##resolution##
+
+sc.tl.leiden(adata, resolution = 0.2)
+##Check the number of cells in each cluster.##
+leiden_counts = adata.obs['leiden'].value_counts()
+print(leiden_counts) 
+###leiden
+0    330155
+1    307280
+2    288403
+3    231769
+4    216636
+5     27315
+6     25623
+7     11960
+8      8666
+Name: count, dtype: int64
+-------
+##Plot a violin plot##
+plt.close('all')
+plt.rcParams['savefig.dpi'] = 300
+plt.figure(figsize=(20, 10))
+sc.pl.violin(
+    adata,
+    ["CD3D","CD3E","CD3G","CD4","CD8A","CD8B","KLRD1","FCGR3A","NKG7","NCAM1","GZMK","FOXP3"], 
+    groupby='leiden',
+    stripplot=False,  
+    jitter=False     
+)
+plt.tight_layout()
+plt.savefig(dir + "02violin_NKT.png", bbox_inches='tight')
+#Plot a UMAP plot##
+plt.close('all')
+plt.rcParams['savefig.dpi'] = 300
+plt.figure(figsize=(10, 8))
+sc.pl.umap(adata, color='leiden', size=20, legend_loc='on data')
+plt.tight_layout()
+plt.savefig(dir + "02umapNKT.png", bbox_inches='tight')
+##Plot a UMAP with the label on the right side##
+plt.close('all')
+plt.rcParams['savefig.dpi'] = 300
+plt.figure(figsize=(10, 8))
+sc.pl.umap(
+    adata,
+    color='leiden',       
+    size=20,            
+    legend_loc='right margin', 
+    legend_fontsize=12,    
+    title="UMAP with Cluster Labels", 
+    frameon=False,         
+)
+
+
+plt.tight_layout()
+
+plt.savefig(dir + "02umap_NKT_labeled_right.png", bbox_inches='tight')
+
+
+###Find differential genes##
+sc.tl.rank_genes_groups(adata, 'leiden', method='wilcoxon')
+sc.pl.rank_genes_groups(adata, n_genes=25, sharey=False)
+adata.write(dir + 'NKT_adata_leiden02_DEG.h5ad')
+
+##Read differential gene data and convert it to CSV##
+result = adata.uns['rank_genes_groups']
+groups = result['names'].dtype.names
+all_groups_df = pd.DataFrame()
+for group in groups:
+    group_data = pd.DataFrame({
+        f"{group}_names": result['names'][group],
+        f"{group}_pvals": result['pvals'][group],
+        f"{group}_logfoldchanges": result['logfoldchanges'][group],
+        f"{group}_scores": result['scores'][group]
+    })
+    all_groups_df = pd.concat([all_groups_df, group_data], axis=1)
+
+all_groups_df.to_csv(dir + '02_DEG_gene_NKT.csv', index=False)
+#Use the dotplot function to create a dot plot##
+sc.pl.dotplot(
+    adata,
+    var_names=["CD3D","CD3E","CD3G","CD4","CD8A","CD8B","KLRD1","FCGR3A","NCAM1"], 
+    groupby='leiden',
+    standard_scale='var', 
+    dot_max=1,  
+    color_map='Blues'  
+)
+
+# save##
+plt.savefig(dir + "NKT.png", bbox_inches='tight')
+plt.savefig(dir + "NKT.pdf", bbox_inches='tight')
+plt.close('all')
+##Define subclusters## 
+adata_filtered = adata[~adata.obs['leiden'].isin(['7', '8'])].copy()
+
+# Create a dictionary to map the original labels from leiden clustering to new labels##
+leiden_rename_dict = {
+    '0': 'CD4+ T cell',
+    '1': 'CD4+ T cell',
+    '2': 'NK cell',
+    '3': 'CD8+ T cell',
+    '4': 'CD8+ T cell',
+    '5': 'DNT',
+    '6': 'CD8+ T cell'
+}
+##renamed##
+adata_filtered.obs['leiden_renamed'] = adata_filtered.obs['leiden'].map(leiden_rename_dict)
+
+##Check if the renaming was successful##
+print(adata_filtered.obs['leiden_renamed'].value_counts())
+leiden_renamed
+CD4+ T cell    637435
+CD8+ T cell    474028
+NK cell        288403
+DNT             27315
+Name: count, dtype: int64
+
+##save##
+adata_filtered.write(dir + 'NKT_cluster_renamed.h5ad')
+##adata =  sc.read_h5ad('/mnt/sdb16t/pancancer_NKT/final/NKT/NKT_cluster_renamed.h5ad')
+sc.pp.neighbors(adata_filtered, use_rep = 'X_scVI')
+sc.tl.umap(adata_filtered)
+
+# Use the dotplot function to create a dot plot##
+sc.pl.dotplot(
+    adata_filtered,
+    var_names=["CD3D","CD3E","CD3G","CD4","CD8A","CD8B","KLRD1","FCGR3A","NCAM1"], 
+    groupby='leiden_renamed',
+    standard_scale='var', 
+    dot_max=1,  
+    color_map='Blues'  
+)
+
+# save
+plt.savefig(dir + "rename_NKT.png", bbox_inches='tight')
+plt.savefig(dir + "rename_NKT.pdf", bbox_inches='tight')
+plt.close('all')
+
+
+
+##Plot a UMAP with the label on the right side##
+sc.pl.umap(
+    adata_filtered,      
+    color='leiden_renamed', 
+    size=20,             
+    legend_loc='right margin',  
+    legend_fontsize=12,   
+    title="UMAP with Cluster Labels (Renamed)",
+    frameon=False,          
+)
+
+
+plt.tight_layout()
+
+# save##
+output_path = os.path.join(dir, "02umap_NKT_labeled_right_renamed.png")
+plt.savefig(output_path, bbox_inches='tight')
+
+#Extraction of CD4, CD8, and DNT cell subclusters.##
+
+# path##
+save_dir = '/path/'
+
+# Extraction of CD4 subcluster##
+cd4_cells = adata_filtered[adata_filtered.obs['leiden_renamed'] == 'CD4+ T cell'].copy()
+
+os.makedirs(save_dir, exist_ok=True)
+
+# save
+cd4_cells.write(os.path.join(save_dir, 'CD4.h5ad'))
+
+
+# Extraction of CD8 subcluster##
+cd8_cells = adata_filtered[adata_filtered.obs['leiden_renamed'] == 'CD8+ T cell'].copy()
+
+os.makedirs(save_dir, exist_ok=True)
+
+# #save##
+cd8_cells.write(os.path.join(save_dir, 'CD8.h5ad'))
+
+print(f'CD8+ T cells have been saved to {save_dir}')
+
+
+# Extraction of DNT subcluster
+dnt_cells = adata_filtered[adata_filtered.obs['leiden_renamed'] == 'DNT'].copy()
+
+os.makedirs(save_dir, exist_ok=True)
+
+save
+dnt_cells.write(os.path.join(save_dir, 'DNT.h5ad'))
+
+print(f'DNT cells have been saved to {save_dir}')
+
+
+
+
+
+
+
